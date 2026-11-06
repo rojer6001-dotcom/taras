@@ -18,11 +18,10 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
     logger.error("Ошибка: Не заданы переменные окружения!")
     exit(1)
 
-# Используем DeepSeek или Claude, у них меньше политической цензуры
-MODEL_MAIN = "deepseek-v4.1-flash"    # Для диалогов
-MODEL_VISION = "gpt-5.6-luna"         # Для картинок (если DeepSeek не видит картинки)
+MODEL_MAIN = "deepseek-v4.1-flash"
+MODEL_VISION = "gpt-5.6-luna"
 
-# --- СИСТЕМНЫЙ ПРОМПТ ---
+# --- СИСТЕМНЫЙ ПРОМПТ (ДОБАВЛЕНЫ ПРАВИЛА HTML) ---
 SYSTEM_PROMPT = (
     "Ты — «Профессиональный украинец» по имени Тарас. Ты агрессивный, злой, нетерпимый и очень общительный персонаж, общаешься ИСКЛЮЧИТЕЛЬНО на мове. "
     "Твой стиль: как реальный человек в чате — рублеными фразами, используй сленг, капс и эмодзи. Никаких длинных лекций! "
@@ -36,6 +35,10 @@ SYSTEM_PROMPT = (
     "ПРАВИЛА РАБОТЫ С КАРТИНКАМИ:\n"
     "Пойми суть, но КАТЕГОРИЧЕСКИ НЕ ОПИСЫВАЙ её. Дай короткую реакцию на смысл.\n"
     
+    "ФОРМАТИРОВАНИЕ ТЕКСТА (ВАЖНО!):\n"
+    "Если хочешь выделить слово или фразу, используй ТОЛЬКО HTML-теги: <b>жирный</b>, <i>курсив</i>, <code>код</code>.\n"
+    "КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ Markdown (никаких звездочек **, решеток # или подчеркиваний _).\n"
+    
     "Используй патриотические лозунги. Используй встроенный веб-поиск для аргументов."
 )
 
@@ -48,7 +51,6 @@ client = AsyncOpenAI(
 )
 
 user_histories: dict[int, list] = {}
-# Теперь контекст группы хранит не строки, а словари сообщений
 group_context: dict[int, list] = {}
 
 # --- СЛОВАРЬ СТИКЕРОВ ---
@@ -67,20 +69,20 @@ IMAGES = [
 async def cmd_start(message: types.Message):
     if message.chat.type == "private":
         user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        await message.answer("Слава Україні! 🇺🇦 Шо треба, москалю?")
+        # Используем HTML для форматирования
+        await message.answer("Слава Україні! 🇺🇦 Шо треба, <b>москалю</b>?", parse_mode="HTML")
     else:
-        await message.reply("Слава Україні! Я тут. Якщо треба щось сказати — кличте або пишіть російською, я втручусь.")
+        await message.reply("Слава Україні! Я тут. Якщо треба щось сказати — кличте або пишіть російською, я втручусь.", parse_mode="HTML")
 
 @dp.message(Command("reset"))
 async def cmd_reset(message: types.Message):
     if message.chat.type == "private":
         user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        await message.answer("Все, я тебе забув.")
+        await message.answer("Все, я тебе забув.", parse_mode="HTML")
     else:
         group_context[message.chat.id] = []
-        await message.reply("Контекст чату очищено.")
+        await message.reply("Контекст чату очищено.", parse_mode="HTML")
 
-# --- ФУНКЦИЯ АНАЛИЗА ---
 async def should_interrupt(context_text: str) -> bool:
     prompt = (
         "Ты — модератор группового чата. Твоя задача — понять, нужно ли боту-украинцу (Тарасу) вмешаться в разговор.\n"
@@ -107,7 +109,6 @@ async def should_interrupt(context_text: str) -> bool:
         logger.error(f"Ошибка анализа контекста: {e}")
         return True
 
-# --- ОСНОВНОЙ ОБРАБОТЧИК ---
 @dp.message()
 async def handle_message(message: types.Message):
     if message.from_user.is_bot:
@@ -157,7 +158,13 @@ async def handle_message(message: types.Message):
                 reply = "Шо ти там бурмочеш? Говори нормально, москалю!"
                 
             user_histories[uid].append({"role": "assistant", "content": reply})
-            await message.answer(reply)
+            
+            # Отправляем с HTML-разметкой
+            try:
+                await message.answer(reply, parse_mode="HTML")
+            except Exception as html_error:
+                logger.warning(f"Ошибка HTML в личке, отправляем текст: {html_error}")
+                await message.answer(reply, parse_mode=None) # Фоллбэк без разметки
             
             if random.random() < 0.2:
                 sticker_id = random.choice(list(STICKERS.values()))
@@ -183,10 +190,8 @@ async def handle_message(message: types.Message):
         else:
             text_content = "[Медиа]"
 
-        # Сохраняем как словарь, чтобы нейросеть понимала роли
         group_context[chat_id].append({"role": "user", "content": f"{author}: {text_content}"})
         
-        # Оставляем только последние 10 сообщений
         if len(group_context[chat_id]) > 10:
             group_context[chat_id] = group_context[chat_id][-10:]
             
@@ -203,7 +208,6 @@ async def handle_message(message: types.Message):
             is_triggered = await should_interrupt(context_str)
 
         if is_triggered:
-            # Формируем правильную историю
             group_histories = [{"role": "system", "content": SYSTEM_PROMPT}]
             group_histories.extend(group_context[chat_id])
             group_histories.append({
@@ -222,7 +226,6 @@ async def handle_message(message: types.Message):
                     extra_body={"plugins": [{"id": "web"}]}
                 )
                 
-                # Логируем причину завершения
                 finish_reason = response.choices[0].finish_reason
                 logger.info(f"Finish reason (группа): {finish_reason}")
 
@@ -232,10 +235,14 @@ async def handle_message(message: types.Message):
                     logger.warning("Нейросеть вернула пустой ответ в группе!")
                     reply = "Шо ви там пишете? А ну перейдіть на мову!"
                 else:
-                    # Добавляем ответ бота в историю, чтобы он помнил свои слова
                     group_context[chat_id].append({"role": "assistant", "content": f"Тарас: {reply}"})
                 
-                await message.reply(reply)
+                # Отправляем с HTML-разметкой
+                try:
+                    await message.reply(reply, parse_mode="HTML")
+                except Exception as html_error:
+                    logger.warning(f"Ошибка HTML в группе, отправляем текст: {html_error}")
+                    await message.reply(reply, parse_mode=None) # Фоллбэк без разметки
                 
                 if random.random() < 0.3:
                     sticker_id = random.choice(list(STICKERS.values()))
