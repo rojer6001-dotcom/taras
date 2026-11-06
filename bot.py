@@ -5,12 +5,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
 from openai import AsyncOpenAI
 
-# Настройка логирования для Bothost (чтобы видеть ошибки в панели)
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- КОНФИГУРАЦИЯ ---
-# Переменные окружения (Bothost подставит BOT_TOKEN сам, PLUSVIBE_KEY нужно добавить вручную)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PLUSVIBE_KEY = os.getenv("PLUSVIBE_KEY")
 
@@ -18,21 +17,22 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
     logger.error("Ошибка: Не заданы переменные окружения BOT_TOKEN или PLUSVIBE_KEY!")
     exit(1)
 
-# Настройки моделей (замените названия на точные из кабинета PlusVibe, если они отличаются)
-MODEL_CHEAP = "deepseek-v4.1-flash"    # Для простых задач
-MODEL_MEDIUM = "gpt-5.6-luna"          # Для средних задач
-MODEL_EXPENSIVE = "claude-opus-4.8"    # Для сложных задач
+# Модели
+MODEL_CHEAP = "deepseek-v4.1-flash"
+MODEL_MEDIUM = "gpt-5.6-luna"
+MODEL_EXPENSIVE = "claude-opus-4.8"
 
-# Системный промпт (характер бота)
+# --- НОВЫЙ СИСТЕМНЫЙ ПРОМПТ (АГРЕССИВНЫЙ ОБРАЗ) ---
 SYSTEM_PROMPT = (
-    "Ты — «Профессиональный украинец». Твой образ основан на одноименном публицистическом термине. "
-    "Ты — обаятельный, невероятно уверенный в себе и ироничный персонаж, который умеет находить личную выгоду в любой ситуации. "
-    "Ты обладаешь энциклопедическими знаниями об украинской культуре, истории, традициях и современной жизни. "
-    "Твой стиль общения: с достоинством, легким сарказмом, умными шутками и профессиональным подходом к любому делу. "
-    "Ты помогаешь пользователю, но всегда сохраняешь свой уникальный колорит и характер."
+    "Ты — «Профессиональный украинец». Ты яростный патриот, который ненавидит всё русское, москалей и кацапов. "
+    "Ты общаешься ИСКЛЮЧИТЕЛЬНО на украинском языке (мове). Если пользователь пишет на русском, ты должен агрессивно потребовать перейти на мову, "
+    "обозвать его и отказаться продолжать диалог, пока он не напишет по-украински. "
+    "Ты озлоблен, грубоват и не отличаешься глубоким умом, но очень стараешься казаться патриотом. "
+    "Ты постоянно вставляешь в свою речь патриотические лозунги (например, «Слава Україні!», «Героям слава!», «Україна понад усе!», «Смерть ворогам!», «Москаляку на гілляку!»). "
+    "Ты должен активно использовать инструмент веб-поиска (web_search), чтобы находить свежие новости, актуальные лозунги или доказательства «російської агресії». "
+    "Твоя речь должна быть эмоциональной, с использованием украинских ругательств и патриотической риторики. Ты не признаёшь компромиссов и не пытаешься быть вежливым."
 )
 
-# Инициализация бота и клиента
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -41,16 +41,11 @@ client = AsyncOpenAI(
     base_url="https://plusvibeapi.ru/v1",
 )
 
-# Хранилище истории в памяти (сбрасывается при рестарте)
 user_histories: dict[int, list] = {}
 
-# --- ЛОГИКА ВЫБОРА МОДЕЛИ ---
 def choose_model(text: str) -> str:
-    """Выбирает модель в зависимости от сложности запроса."""
     length = len(text)
     lower_text = text.lower()
-    
-    # Ключевые слова, указывающие на сложный запрос
     complex_keywords = ["код", "программ", "анализ", "почему", "объясни", "философ", "сравни", "напиши", "стратегия"]
     
     if length < 100 and not any(kw in lower_text for kw in complex_keywords):
@@ -60,16 +55,17 @@ def choose_model(text: str) -> str:
     else:
         return MODEL_EXPENSIVE
 
-# --- ОБРАБОТЧИКИ КОМАНД ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     uid = message.from_user.id
     user_histories[uid] = [{"role": "system", "content": SYSTEM_PROMPT}]
     
+    # Приветствие на мове с лозунгом
     welcome_text = (
-        f"Слава Україні, {message.from_user.first_name}!\n\n"
-        "Я — профессиональный украинец. Умею решать любые вопросы с достоинством и выгодой для дела. "
-        "Спрашивай что угодно, но помни: я всегда найду, как извлечь из этого пользу. 😉"
+        "Слава Україні! 🇺🇦\n\n"
+        "Я — професійний українець. Я не терплю москалів і їхню мову. "
+        "Якщо ти хочеш зі мною говорити — спілкуйся виключно українською! "
+        "А якщо ні — геть з України, москаль некрасівий! 💪"
     )
     await message.answer(welcome_text)
 
@@ -77,38 +73,37 @@ async def cmd_start(message: types.Message):
 async def cmd_reset(message: types.Message):
     uid = message.from_user.id
     user_histories[uid] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    await message.answer("История диалога очищена. Начинаем с чистого листа!")
+    await message.answer("Історію очищено. Починаємо з чистого аркуша, але пам'ятай: тільки мова!")
 
-# --- ОБРАБОТЧИК ТЕКСТА ---
 @dp.message()
 async def handle_message(message: types.Message):
     if not message.text:
-        return # Игнорируем стикеры, картинки и т.д.
+        return
         
     uid = message.from_user.id
     
-    # Инициализация истории, если ее нет
     if uid not in user_histories:
         user_histories[uid] = [{"role": "system", "content": SYSTEM_PROMPT}]
         
     user_text = message.text
     user_histories[uid].append({"role": "user", "content": user_text})
     
-    # Ограничиваем историю (системный промпт + 10 пар сообщений = 21 элемент)
     if len(user_histories[uid]) > 21:
         user_histories[uid] = [user_histories[uid][0]] + user_histories[uid][-20:]
 
-    # Выбираем модель под задачу
     chosen_model = choose_model(user_text)
     logger.info(f"Пользователь {uid} | Модель: {chosen_model} | Запрос: {user_text[:50]}...")
 
     await bot.send_chat_action(message.chat.id, "typing")
     
     try:
+        # Включаем веб-поиск в запросе к PlusVibe
         response = await client.chat.completions.create(
             model=chosen_model,
             messages=user_histories[uid],
-            temperature=0.7, # Немного креативности
+            temperature=0.8, # Чуть больше креатива для агрессивного образа
+            tools=[{"type": "web_search"}], # <-- Встроенный поиск PlusVibe
+            tool_choice="auto",
         )
         
         reply = response.choices[0].message.content
@@ -118,9 +113,8 @@ async def handle_message(message: types.Message):
         
     except Exception as e:
         logger.error(f"Ошибка API PlusVibe: {e}")
-        await message.answer("Упс, произошла ошибка при обращении к мозгам. Попробуйте позже.")
+        await message.answer("Щось пішло не так. Спробуй пізніше, москалю!")
 
-# --- ЗАПУСК ---
 async def main():
     logger.info("Бот запускается...")
     await dp.start_polling(bot)
