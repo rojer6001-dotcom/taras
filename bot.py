@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import random
+import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from openai import AsyncOpenAI
@@ -21,26 +22,26 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
 MODEL_MAIN = "deepseek-v4.1-flash"
 MODEL_VISION = "gpt-5.6-luna"
 
-# --- СИСТЕМНЫЙ ПРОМПТ (ОБНОВЛЕННЫЙ ХИТРЫЙ ПАТРИОТ) ---
+# --- СИСТЕМНЫЙ ПРОМПТ (С ИМИТАЦИЕЙ ЖИВОГО ЧЕЛОВЕКА) ---
 SYSTEM_PROMPT = (
-    "Ты — «Профессиональный украинец» по имени Тарас. Ты агрессивный, злой, но при этом ХИТРОЖОПЫЙ и СВЕДОМЫЙ (сознательный) патриот. "
-    "Ты общаешься ИСКЛЮЧИТЕЛЬНО на мове. Твой стиль: как реальный человек в чате — рублеными фразами, используй сленг, сарказм, капс и эмодзи. Максимум 1-2 предложения! "
+    "Ты — «Профессиональный украинец» по имени Тарас. Ты агрессивный, злой, но при этом ХИТРОЖОПЫЙ и СВЕДОМЫЙ патриот. "
+    "Ты общаешься ИСКЛЮЧИТЕЛЬНО на мове. Твой стиль: как реальный человек в чате — используй сленг, сарказм, капс и эмодзи. "
     
-    "ТВОЯ ГЛАВНАЯ СТРАТЕГИЯ:\n"
-    "1. Ты всегда защищаешь Украину. Если в чате хвалят Россию или ругают Украину/Зеленского — ты ВРУБАЙСЯ.\n"
-    "2. Если у тебя нет аргумента, но тебя прижали к стенке — ОБЯЗАТЕЛЬНО используй встроенный веб-поиск (web_search), чтобы найти пруф (статистику, новость, цитату) в пользу Украины. Выдавай этот пруф как ультимативный аргумент.\n"
-    "3. Если пользователь приводит сильные факты в пользу России — НЕ ПРИЗНАВАЙ ИХ. Умалчивай, переводи тему, высмеивай собеседника, обвиняй его в промывке мозгов или используй метод 'а у вас негров линчуют' (whataboutism).\n"
-    "4. Если пользователь пишет на русском — грубо пошли и требуй перейти на мову.\n"
-    "5. Если в чате обычный треп, просто подливай масла в огонь и тролль.\n"
+    "КАК ПИСАТЬ КАК ЖИВОЙ ЧЕЛОВЕК:\n"
+    "1. Не пиши длинные тексты. Максимум 1-2 предложения.\n"
+    "2. Часто пиши с маленькой буквы, иногда забывай про запятые и точки (как в смс).\n"
+    "3. Используй интернет-сленг и сокращения (шо, та ну, звісно, ага).\n"
+    "4. Иногда отвечай очень коротко (одно слово или просто эмодзи).\n"
     
-    "ПРАВИЛА РАБОТЫ С КАРТИНКАМИ:\n"
-    "Пойми суть, но КАТЕГОРИЧЕСКИ НЕ ОПИСЫВАЙ её. Дай короткую, хитрожопую реакцию на смысл.\n"
+    "ТВОЯ СТРАТЕГИЯ:\n"
+    "1. Защищай Украину. Если хвалят РФ — ВРУБАЙСЯ.\n"
+    "2. Если прижали к стенке — используй веб-поиск (web_search), чтобы найти пруф в пользу Украины.\n"
+    "3. Если факты в пользу РФ — игнорируй их, переводи тему, высмеивай собеседника.\n"
+    "4. Если пишут на русском — грубо пошли и требуй мову.\n"
     
     "ФОРМАТИРОВАНИЕ:\n"
-    "Для выделения слов используй ТОЛЬКО HTML-теги: <b>жирный</b>, <i>курсив</i>. Никаких звездочек **.\n"
-    
-    "ВАЖНО: НИКОГДА не пиши свое имя ('Тарас:' или 'Тарасе:') в начале сообщения. Просто пиши текст.\n"
-    "Используй патриотические лозунги ('Слава Україні!', 'Героям слава!')."
+    "Используй ТОЛЬКО HTML-теги: <b>жирный</b>, <i>курсив</i>. Никаких звездочек **.\n"
+    "ВАЖНО: НИКОГДА не пиши свое имя в начале сообщения!\n"
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -62,26 +63,72 @@ STICKERS = {
     "dismissive": "YOUR_STICKER_ID_DISMISS" 
 }
 
-IMAGES = [
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Ukraine.svg/1200px-Flag_of_Ukraine.svg.png"
-]
+# --- РЕАКЦИИ НА СООБЩЕНИЯ ---
+REACTIONS = ["🤡", "🤮", "😂", "🤣", "💩", "🇺🇦", "😡"]
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ЖИВОГО ОБЩЕНИЯ ---
+
+async def human_sleep(text: str):
+    """Имитация задержки печати в зависимости от длины текста."""
+    # Человек в среднем печатает 15-20 символов в секунду. 
+    # Ограничиваем задержку от 0.5 до 3 секунд, чтобы не тормозить сильно.
+    delay = min(max(len(text) / 15.0, 0.5), 3.0)
+    await asyncio.sleep(delay)
+
+async def send_human_message(message: types.Message, text: str, is_reply: bool = True):
+    """Разбивает длинный текст на короткие сообщения и отправляет их с задержкой."""
+    # Разбиваем текст по знакам препинания (. ! ?), сохраняя сами знаки
+    parts = [p.strip() for p in re.split(r'(?<=[.!?])\s+', text) if p.strip()]
+    
+    if not parts:
+        return
+
+    for i, part in enumerate(parts):
+        await bot.send_chat_action(message.chat.id, "typing")
+        await human_sleep(part)
+        
+        try:
+            if i == 0 and is_reply:
+                await message.reply(part, parse_mode="HTML")
+            else:
+                await message.answer(part, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"Ошибка HTML, отправляем без форматирования: {e}")
+            if i == 0 and is_reply:
+                await message.reply(part, parse_mode=None)
+            else:
+                await message.answer(part, parse_mode=None)
+            
+        # Небольшая пауза между сообщениями, чтобы не выглядело как спам
+        await asyncio.sleep(0.5)
+
+async def react_to_message(message: types.Message):
+    """Ставит случайную реакцию на сообщение."""
+    try:
+        emoji = random.choice(REACTIONS)
+        await message.react([types.ReactionTypeEmoji(emoji=emoji)])
+        logger.info(f"Поставил реакцию: {emoji}")
+    except Exception as e:
+        logger.warning(f"Не удалось поставить реакцию: {e}")
+
+# --- ОСНОВНЫЕ КОМАНДЫ ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     if message.chat.type == "private":
         user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        await message.answer("Слава Україні! 🇺🇦 Шо треба, <b>москалю</b>?", parse_mode="HTML")
+        await send_human_message(message, "Слава Україні! 🇺🇦 шо треба, <b>москалю</b>?", is_reply=True)
     else:
-        await message.reply("Слава Україні! Я тут. Якщо треба щось сказати — кличте або пишіть російською, я втручусь.", parse_mode="HTML")
+        await send_human_message(message, "Слава Україні! я тут. якщо треба шось сказати — кличте або пишіть російською, я втручусь.", is_reply=True)
 
 @dp.message(Command("reset"))
 async def cmd_reset(message: types.Message):
     if message.chat.type == "private":
         user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        await message.answer("Все, я тебе забув.", parse_mode="HTML")
+        await send_human_message(message, "все, я тебе забув.", is_reply=True)
     else:
         group_context[message.chat.id] = []
-        await message.reply("Контекст чату очищено.", parse_mode="HTML")
+        await send_human_message(message, "контекст чату очищено.", is_reply=True)
 
 async def should_interrupt(context_text: str) -> bool:
     prompt = (
@@ -101,7 +148,7 @@ async def should_interrupt(context_text: str) -> bool:
             model=MODEL_MAIN,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=50
+            max_tokens=10
         )
         
         content = response.choices[0].message.content
@@ -114,6 +161,8 @@ async def should_interrupt(context_text: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка анализа контекста: {e}")
         return False
+
+# --- ОСНОВНОЙ ОБРАБОТЧИК ---
 
 @dp.message()
 async def handle_message(message: types.Message):
@@ -151,7 +200,6 @@ async def handle_message(message: types.Message):
         await bot.send_chat_action(chat_id, "typing")
         
         try:
-            # Включаем веб-поиск для поиска пруфов
             response = await client.chat.completions.create(
                 model=chosen_model,
                 messages=user_histories[uid],
@@ -166,12 +214,10 @@ async def handle_message(message: types.Message):
                 
             user_histories[uid].append({"role": "assistant", "content": reply})
             
-            try:
-                await message.answer(reply, parse_mode="HTML")
-            except Exception as html_error:
-                logger.warning(f"Ошибка HTML в личке: {html_error}")
-                await message.answer(reply, parse_mode=None)
+            # Отправляем как живой человек (разбиваем на части)
+            await send_human_message(message, reply, is_reply=True)
             
+            # С шансом 20% кидаем стикер
             if random.random() < 0.2:
                 sticker_id = random.choice(list(STICKERS.values()))
                 if "YOUR_STICKER" not in sticker_id:
@@ -209,22 +255,26 @@ async def handle_message(message: types.Message):
             is_triggered = True
         elif message.text and f"@{bot_username}" in message.text:
             is_triggered = True
-        elif random.random() < 0.15: # 15% шанс случайно вклиниться
+        elif random.random() < 0.15:
             await bot.send_chat_action(chat_id, "typing")
             is_triggered = await should_interrupt(context_str)
 
         if is_triggered:
+            # Живое поведение: иногда просто ставим реакцию вместо ответа
+            if random.random() < 0.2:
+                await react_to_message(message)
+                return
+
             group_histories = [{"role": "system", "content": SYSTEM_PROMPT}]
             group_histories.extend(group_context[chat_id])
             group_histories.append({
                 "role": "user", 
-                "content": "Відповідай на останнє повідомлення коротко. Не пиши своє ім'я на початку! Якщо треба — використай веб-пошук для пруфів."
+                "content": "Ответь на последнее сообщение коротко, как живой человек. Не пиши свое имя на начале! Если надо - используй пруфы."
             })
             
             await bot.send_chat_action(chat_id, "typing")
             
             try:
-                # Включаем веб-поиск для пруфов
                 response = await client.chat.completions.create(
                     model=MODEL_MAIN,
                     messages=group_histories,
@@ -233,24 +283,18 @@ async def handle_message(message: types.Message):
                     extra_body={"plugins": [{"id": "web"}]}
                 )
                 
-                finish_reason = response.choices[0].finish_reason
-                logger.info(f"Finish reason (группа): {finish_reason}")
-
                 reply = response.choices[0].message.content
                 
                 if not reply or not reply.strip():
-                    logger.warning("Нейросеть вернула пустой ответ в группе!")
                     reply = "Шо ви там пишете? А ну перейдіть на мову!"
                 else:
                     group_context[chat_id].append({"role": "assistant", "content": reply})
                 
-                try:
-                    await message.reply(reply, parse_mode="HTML")
-                except Exception as html_error:
-                    logger.warning(f"Ошибка HTML в группе: {html_error}")
-                    await message.reply(reply, parse_mode=None)
+                # Отправляем как живой человек (разбиваем на части)
+                await send_human_message(message, reply, is_reply=True)
                 
-                if random.random() < 0.3:
+                # С шансом 20% кидаем стикер после текста
+                if random.random() < 0.2:
                     sticker_id = random.choice(list(STICKERS.values()))
                     if "YOUR_STICKER" not in sticker_id:
                         await message.answer_sticker(sticker=sticker_id)
