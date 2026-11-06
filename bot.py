@@ -21,7 +21,7 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
 MODEL_MAIN = "deepseek-v4.1-flash"
 MODEL_VISION = "gpt-5.6-luna"
 
-# --- СИСТЕМНЫЙ ПРОМПТ (ДОБАВЛЕН ЗАПРЕТ НА ИМЯ) ---
+# --- СИСТЕМНЫЙ ПРОМПТ ---
 SYSTEM_PROMPT = (
     "Ты — «Профессиональный украинец» по имени Тарас. Ты агрессивный, злой, нетерпимый и очень общительный персонаж, общаешься ИСКЛЮЧИТЕЛЬНО на мове. "
     "Твой стиль: как реальный человек в чате — рублеными фразами, используй сленг, капс и эмодзи. Никаких длинных лекций! "
@@ -85,31 +85,39 @@ async def cmd_reset(message: types.Message):
         group_context[message.chat.id] = []
         await message.reply("Контекст чату очищено.", parse_mode="HTML")
 
+# --- ОБНОВЛЕННЫЙ АНАЛИЗ (СТАЛ БОЛЕЕ СТРОГИМ) ---
 async def should_interrupt(context_text: str) -> bool:
     prompt = (
         "Ты — модератор группового чата. Твоя задача — понять, нужно ли боту-украинцу (Тарасу) вмешаться в разговор.\n"
-        "Тарас — хамоватый, агрессивный патриот, который любит спорить, троллить и защищать Украину.\n"
+        "Тарас — хамоватый патриот, который НЕ ЛЮБИТ русский язык, Россию и готов спорить, если задевают Украину.\n"
         f"Последние сообщения в чате:\n{context_text}\n\n"
-        "Если в чате есть хоть малейший повод вклиниться (обсуждение политики, кто-то пишет на русском, или просто скучный разговор) — ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА'.\n"
-        "Если это реально скучный технический вопрос без эмоций — ответь 'НЕТ'."
+        "Вмешиваться НУЖНО ТОЛЬКО если есть ЯВНЫЙ триггер:\n"
+        "- Кто-то пишет на русском языке.\n"
+        "- Хвалят Россию, Путина или российскую армию.\n"
+        "- Ругают Украину, украинцев или Зеленского.\n"
+        "- Прямо провоцируют Тараса.\n"
+        "Если в чате обычный треп, обсуждение игр, кода или шутки без политики — вмешиваться НЕ НУЖНО.\n\n"
+        "Ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА' (если есть триггер) или 'НЕТ' (если это обычный разговор)."
     )
     try:
         response = await client.chat.completions.create(
             model=MODEL_MAIN,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.1, # Снизили температуру для более строгого следования правилам
             max_tokens=50
         )
         
         content = response.choices[0].message.content
         if not content:
-            return True
+            return False # Если модель заглючила, лучше промолчать
             
-        return "ДА" in content.strip().upper() or "YES" in content.strip().upper()
+        answer = content.strip().upper()
+        logger.info(f"Анализ контекста: {answer}")
+        return "ДА" in answer or "YES" in answer
         
     except Exception as e:
         logger.error(f"Ошибка анализа контекста: {e}")
-        return True
+        return False
 
 @dp.message()
 async def handle_message(message: types.Message):
@@ -191,7 +199,6 @@ async def handle_message(message: types.Message):
         else:
             text_content = "[Медиа]"
 
-        # Пользователя сохраняем с именем, чтобы модель понимала контекст
         group_context[chat_id].append({"role": "user", "content": f"{author}: {text_content}"})
         
         if len(group_context[chat_id]) > 10:
@@ -201,11 +208,13 @@ async def handle_message(message: types.Message):
 
         is_triggered = False
         
+        # 100% реагируем на реплай или прямое упоминание
         if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
             is_triggered = True
         elif message.text and f"@{bot_username}" in message.text:
             is_triggered = True
-        elif random.random() < 0.85:
+        # Снизили шанс случайного вмешательства до 15%
+        elif random.random() < 0.15:
             await bot.send_chat_action(chat_id, "typing")
             is_triggered = await should_interrupt(context_str)
 
@@ -237,7 +246,6 @@ async def handle_message(message: types.Message):
                     logger.warning("Нейросеть вернула пустой ответ в группе!")
                     reply = "Шо ви там пишете? А ну перейдіть на мову!"
                 else:
-                    # Сохраняем ответ бота БЕЗ приставки "Тарас:", чтобы не было эха
                     group_context[chat_id].append({"role": "assistant", "content": reply})
                 
                 try:
