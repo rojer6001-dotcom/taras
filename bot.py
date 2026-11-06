@@ -18,8 +18,9 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
     logger.error("Ошибка: Не заданы переменные окружения!")
     exit(1)
 
-MODEL_CHEAP = "deepseek-v4.1-flash"
-MODEL_VISION = "gpt-5.6-luna"
+# Модели: заменяем дешевую модель на качественную для отличного понимания контекста
+MODEL_MAIN = "gpt-5.6-luna"    # Умная модель для диалогов и анализа (можно также "claude-opus-4.8")
+MODEL_VISION = "gpt-5.6-luna"  # Для работы с изображениями
 
 # --- СИСТЕМНЫЙ ПРОМПТ ---
 SYSTEM_PROMPT = (
@@ -79,33 +80,42 @@ async def cmd_reset(message: types.Message):
         group_context[message.chat.id] = []
         await message.reply("Контекст чату очищено.")
 
-# --- ФУНКЦИЯ АНАЛИЗА (СДЕЛАНА БОЛЕЕ АГРЕССИВНОЙ) ---
+# --- ФУНКЦИЯ АНАЛИЗА ---
 async def should_interrupt(context_text: str) -> bool:
     prompt = (
         "Ты — модератор группового чата. Твоя задача — понять, нужно ли боту-украинцу (Тарасу) вмешаться в разговор.\n"
         "Тарас — хамоватый, агрессивный патриот, который любит спорить, троллить и защищать Украину.\n"
         f"Последние сообщения в чате:\n{context_text}\n\n"
-        "Если в чате есть хоть малейший повод вклиниться (обсуждение политики, упоминание РФ/Украины, кто-то пишет на русском, или просто скучный разговор, который можно разбавить хамством) — ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА'.\n"
+        "Если в чате есть хоть малейший повод вклиниться (обсуждение политики, упоминание РФ/Украины, кто-то пишет на русском, или просто скучный разговор) — ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА'.\n"
         "Если это реально скучный технический вопрос без эмоций — ответь 'НЕТ'."
     )
     try:
         response = await client.chat.completions.create(
-            model=MODEL_CHEAP,
+            model=MODEL_MAIN, # Используем умную модель для лучшего понимания контекста
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=10
+            max_tokens=50
         )
-        answer = response.choices[0].message.content.strip().upper()
-        logger.info(f"Анализ контекста: {answer}")
+        
+        finish_reason = response.choices[0].finish_reason
+        content = response.choices[0].message.content
+        
+        if not content:
+            logger.warning(f"Пустой ответ при анализе (Finish reason: {finish_reason}). Решаем ВМЕШАТЬСЯ.")
+            return True
+            
+        answer = content.strip().upper()
+        logger.info(f"Анализ контекста: {answer} (Finish reason: {finish_reason})")
+        
         return "ДА" in answer or "YES" in answer
+        
     except Exception as e:
         logger.error(f"Ошибка анализа контекста: {e}")
-        return False
+        return True
 
 # --- ОСНОВНОЙ ОБРАБОТЧИК ---
 @dp.message()
 async def handle_message(message: types.Message):
-    # Игнорируем свои собственные сообщения, чтобы не было спама
     if message.from_user.is_bot:
         return
 
@@ -136,7 +146,8 @@ async def handle_message(message: types.Message):
         if len(user_histories[uid]) > 11:
             user_histories[uid] = [user_histories[uid][0]] + user_histories[uid][-10:]
 
-        chosen_model = MODEL_VISION if message.photo else MODEL_CHEAP
+        # Выбор модели для лички
+        chosen_model = MODEL_VISION if message.photo else MODEL_MAIN
         await bot.send_chat_action(chat_id, "typing")
         
         try:
@@ -155,7 +166,6 @@ async def handle_message(message: types.Message):
             user_histories[uid].append({"role": "assistant", "content": reply})
             await message.answer(reply)
             
-            # Стикеры/картинки
             if random.random() < 0.2:
                 sticker_id = random.choice(list(STICKERS.values()))
                 if "YOUR_STICKER" not in sticker_id:
@@ -170,7 +180,6 @@ async def handle_message(message: types.Message):
         if chat_id not in group_context:
             group_context[chat_id] = []
             
-        # Сохраняем текст или тип медиа
         author = message.from_user.first_name
         if message.text:
             text_content = message.text
@@ -183,19 +192,17 @@ async def handle_message(message: types.Message):
 
         group_context[chat_id].append(f"{author}: {text_content}")
         
-        if len(group_context[chat_id]) > 10: # Увеличили память контекста
+        if len(group_context[chat_id]) > 10:
             group_context[chat_id] = group_context[chat_id][-10:]
             
         context_str = "\n".join(group_context[chat_id])
 
         is_triggered = False
         
-        # 1. Прямой реплай на сообщение бота или упоминание
         if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
             is_triggered = True
         elif message.text and f"@{bot_username}" in message.text:
             is_triggered = True
-        # 2. Или если бот решил вклиниться (теперь шанс 85%)
         elif random.random() < 0.85:
             await bot.send_chat_action(chat_id, "typing")
             is_triggered = await should_interrupt(context_str)
@@ -211,10 +218,10 @@ async def handle_message(message: types.Message):
             
             try:
                 response = await client.chat.completions.create(
-                    model=MODEL_CHEAP,
+                    model=MODEL_MAIN,
                     messages=group_histories,
                     temperature=0.9,
-                    max_tokens=500, # Увеличено
+                    max_tokens=500,
                     extra_body={"plugins": [{"id": "web"}]}
                 )
                 
@@ -226,7 +233,6 @@ async def handle_message(message: types.Message):
                 await message.reply(reply)
                 group_context[chat_id].append(f"Тарас: {reply}")
                 
-                # Отправляем стикер с шансом 30%
                 if random.random() < 0.3:
                     sticker_id = random.choice(list(STICKERS.values()))
                     if "YOUR_STICKER" not in sticker_id:
