@@ -18,10 +18,11 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
     logger.error("Ошибка: Не заданы переменные окружения!")
     exit(1)
 
+# Модели (замените, если в PlusVibe они называются иначе)
 MODEL_CHEAP = "deepseek-v4.1-flash"
-MODEL_VISION = "gpt-5.6-luna" # Модель для анализа картинок (должна поддерживать Vision)
+MODEL_VISION = "gpt-5.6-luna" # Модель для анализа картинок
 
-# --- ОБНОВЛЕННЫЙ ПРОМПТ (С ТРИГГЕРАМИ И АНАЛИЗОМ КАРТИНОК) ---
+# --- СИСТЕМНЫЙ ПРОМПТ ---
 SYSTEM_PROMPT = (
     "Ты — «Профессиональный украинец». Ты агрессивный, злой и нетерпимый персонаж, общаешься ИСКЛЮЧИТЕЛЬНО на мове. "
     "Твой стиль: как реальный человек в чате — ОЧЕНЬ КОРОТКО, рублеными фразами, без длинных абзацев. Максимум 1-2 предложения. "
@@ -29,7 +30,7 @@ SYSTEM_PROMPT = (
     "ПРАВИЛА РЕАКЦИИ НА ТЕКСТ:\n"
     "1. Если пользователь пишет что-то позитивное про Россию — коротко, но аргументированно оспаривай это (приведи факт или контраргумент).\n"
     "2. Если пишут что-то плохое про Украину или украинских политиков — ВРУБАЙСЯ. Защищай их яростно, агрессивно, переходи на оскорбления.\n"
-    "3. Если пишут на русском — грубо пошли и требуй перейти на мову.\n"
+    "3. Если пишут на русском — грубо пошли и требуй перейти на мову (например: 'Говори на мові, москалю!').\n"
     
     "ПРАВИЛА РАБОТЫ С КАРТИНКАМИ:\n"
     "Если тебе прислали картинку — ВНИМАТЕЛЬНО ПОСМОТРИ, что на ней, но КАТЕГОРИЧЕСКИ НЕ ОПИСЫВАЙ её (не пересказывай, что нарисовано). "
@@ -39,7 +40,7 @@ SYSTEM_PROMPT = (
     "Твой ответ должен быть короткой реакцией на смысл картинки, а не её описанием.\n"
     
     "Используй патриотические лозунги ('Слава Україні!', 'Героям слава!'). "
-    "Используй инструмент web_search, чтобы находить аргументы или свежие новости."
+    "Используй встроенный веб-поиск, чтобы находить аргументы или свежие новости, если не хватает фактов."
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -52,7 +53,7 @@ client = AsyncOpenAI(
 
 user_histories: dict[int, list] = {}
 
-# Картинки для случайной отправки
+# Список картинок для случайной отправки (можете заменить ссылки на свои)
 IMAGES = [
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Ukraine.svg/1200px-Flag_of_Ukraine.svg.png",
     "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e2/Coat_of_Arms_of_Ukraine.svg/800px-Coat_of_Arms_of_Ukraine.svg.png"
@@ -70,10 +71,9 @@ async def cmd_reset(message: types.Message):
     user_histories[uid] = [{"role": "system", "content": SYSTEM_PROMPT}]
     await message.answer("Все, я тебе забув. Пиши знову, але тільки на мові!")
 
-# --- ОБРАБОТЧИК ТЕКСТА И КАРТИНОК ---
 @dp.message()
 async def handle_message(message: types.Message):
-    # Игнорируем пустые сообщения (стикеры, гифки и т.д., если не нужна их обработка)
+    # Игнорируем сообщения без текста и без фото
     if not message.text and not message.photo:
         return
         
@@ -83,18 +83,16 @@ async def handle_message(message: types.Message):
 
     content = []
     
-    # Если пришел текст
+    # Обработка текста
     if message.text:
         content.append({"type": "text", "text": message.text})
         
-    # Если пришла картинка
+    # Обработка картинок
     if message.photo:
-        # Берем картинку в максимальном разрешении
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         
-        # Текст, который может быть прикреплен к картинке (подпись)
         caption = message.caption if message.caption else "Реагируй на эту картинку."
         
         content.append({"type": "text", "text": caption})
@@ -103,14 +101,14 @@ async def handle_message(message: types.Message):
             "image_url": {"url": file_url}
         })
 
-    # Добавляем в историю
+    # Сохраняем в историю
     user_histories[uid].append({"role": "user", "content": content})
     
-    # Ограничиваем историю
+    # Ограничиваем историю (последние 10 сообщений)
     if len(user_histories[uid]) > 11:
         user_histories[uid] = [user_histories[uid][0]] + user_histories[uid][-10:]
 
-    # Выбираем модель: если есть картинка, используем Vision-модель, иначе дешевую
+    # Выбор модели
     chosen_model = MODEL_VISION if message.photo else MODEL_CHEAP
     
     await bot.send_chat_action(message.chat.id, "typing")
@@ -120,9 +118,8 @@ async def handle_message(message: types.Message):
             model=chosen_model,
             messages=user_histories[uid],
             temperature=0.9,
-            max_tokens=100, # Ограничиваем длину, чтобы не растекался мыслью
-            tools=[{"type": "web_search"}],
-            tool_choice="auto",
+            max_tokens=100, # Ограничение длины
+            extra_body={"plugins": [{"id": "web"}]} # Включаем веб-поиск
         )
         
         reply = response.choices[0].message.content
@@ -130,13 +127,14 @@ async def handle_message(message: types.Message):
         
         await message.answer(reply)
         
-        # С вероятностью 15% кидаем мем/картинку
+        # 15% шанс отправить картинку после текста
         if random.random() < 0.15:
             img_url = random.choice(IMAGES)
             await message.answer_photo(photo=img_url)
             
     except Exception as e:
-        logger.error(f"Ошибка API PlusVibe: {e}")
+        # Выводим полную ошибку в логи Bothost
+        logger.error(f"Ошибка API PlusVibe: {e}", exc_info=True) 
         await message.answer("Відчепись, не до тебе!")
 
 async def main():
