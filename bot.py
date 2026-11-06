@@ -2,7 +2,7 @@ import asyncio
 import os
 import logging
 import random
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from openai import AsyncOpenAI
 
@@ -19,7 +19,7 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
     exit(1)
 
 MODEL_CHEAP = "deepseek-v4.1-flash"
-MODEL_VISION = "gpt-5.6-luna" 
+MODEL_VISION = "gpt-5.6-luna"
 
 # --- СИСТЕМНЫЙ ПРОМПТ ---
 SYSTEM_PROMPT = (
@@ -46,10 +46,17 @@ client = AsyncOpenAI(
     base_url="https://plusvibeapi.ru/v1",
 )
 
-# Хранилище личных диалогов
+# Хранилище личных диалогов и контекста групп
 user_histories: dict[int, list] = {}
-# Хранилище последних сообщений в группах (для контекста)
 group_context: dict[int, list] = {}
+
+# --- СЛОВАРЬ СТИКЕРОВ (ОБЯЗАТЕЛЬНО ЗАМЕНИТЕ ID НА СВОИ) ---
+STICKERS = {
+    "angry": "YOUR_STICKER_ID_ANGRY",       
+    "laugh": "YOUR_STICKER_ID_LAUGH",       
+    "patriotic": "YOUR_STICKER_ID_PATRIOT", 
+    "dismissive": "YOUR_STICKER_ID_DISMISS" 
+}
 
 IMAGES = [
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Ukraine.svg/1200px-Flag_of_Ukraine.svg.png",
@@ -75,20 +82,19 @@ async def cmd_reset(message: types.Message):
 
 # --- ФУНКЦИЯ АНАЛИЗА: СТОИТ ЛИ ВМЕШИВАТЬСЯ? ---
 async def should_interrupt(context_text: str) -> bool:
-    """Спрашивает у дешевой модели, есть ли в чате повод для вмешательства."""
     prompt = (
         "Ты — модератор чата. Твоя задача — понять, нужно ли боту-украинцу вмешаться в разговор.\n"
         "Бот ненавидит русский язык, Россию и любит защищать Украину.\n"
         f"Последние сообщения в чате:\n{context_text}\n\n"
-        "Ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА' (если в чате пишут на русском, хвалят РФ или ругают Украину, и боту нужно ответить) "
-        "или 'НЕТ' (если это обычный треп, мемы или болтовня)."
+        "Ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА' (если в чате пишут на русском, хвалят РФ или ругают Украину) "
+        "или 'НЕТ' (если это обычный треп)."
     )
     try:
         response = await client.chat.completions.create(
             model=MODEL_CHEAP,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=5
+            max_tokens=10
         )
         answer = response.choices[0].message.content.strip().upper()
         return "ДА" in answer or "YES" in answer
@@ -96,15 +102,13 @@ async def should_interrupt(context_text: str) -> bool:
         logger.error(f"Ошибка анализа контекста: {e}")
         return False
 
-@dp.message()
+# --- ОСНОВНОЙ ОБРАБОТЧИК (ТЕКСТ И КАРТИНКИ) ---
+@dp.message(F.text | F.photo)
 async def handle_message(message: types.Message):
-    if not message.text and not message.photo:
-        return
-        
     chat_id = message.chat.id
     is_private = message.chat.type == "private"
     bot_username = (await bot.get_me()).username
-    
+
     # --- ЛОГИКА ДЛЯ ЛИЧНЫХ СООБЩЕНИЙ ---
     if is_private:
         uid = message.from_user.id
@@ -134,14 +138,30 @@ async def handle_message(message: types.Message):
                 model=chosen_model,
                 messages=user_histories[uid],
                 temperature=0.9,
-                max_tokens=100,
+                max_tokens=500, # Увеличено, чтобы модель не выдавала пустоту
                 extra_body={"plugins": [{"id": "web"}]}
             )
+            
+            # Логируем причину завершения ответа (stop, length, content_filter)
+            finish_reason = response.choices[0].finish_reason
+            logger.info(f"Finish reason (личка): {finish_reason}")
+
             reply = response.choices[0].message.content
+            
+            # Защита от пустого ответа
+            if not reply or not reply.strip():
+                reply = "Шо ти там бурмочеш? Говори нормально, москалю!"
+                
             user_histories[uid].append({"role": "assistant", "content": reply})
             await message.answer(reply)
             
-            if random.random() < 0.15:
+            # Отправка стикера или картинки
+            rand_val = random.random()
+            if rand_val < 0.15:
+                sticker_id = random.choice(list(STICKERS.values()))
+                if "YOUR_STICKER" not in sticker_id:
+                    await message.answer_sticker(sticker=sticker_id)
+            elif rand_val < 0.30:
                 await message.answer_photo(photo=random.choice(IMAGES))
                 
         except Exception as e:
@@ -150,38 +170,29 @@ async def handle_message(message: types.Message):
             
     # --- ЛОГИКА ДЛЯ ГРУПП ---
     else:
-        # Инициализация контекста группы
         if chat_id not in group_context:
             group_context[chat_id] = []
             
-        # Сохраняем текст сообщения (и кто написал) в контекст группы
         author = message.from_user.first_name
         text_content = message.text if message.text else "[Картинка]"
         group_context[chat_id].append(f"{author}: {text_content}")
         
-        # Оставляем только последние 7 сообщений для анализа
         if len(group_context[chat_id]) > 7:
             group_context[chat_id] = group_context[chat_id][-7:]
             
         context_str = "\n".join(group_context[chat_id])
 
-        # Проверяем триггеры: обращение по имени, реплай на бота, или ПРОВОКАЦИЯ
         is_triggered = False
         
-        # 1. Бота упомянули через @ или ответили на его сообщение
         if message.reply_to_message and message.reply_to_message.from_user.id == bot.id:
             is_triggered = True
         elif message.text and f"@{bot_username}" in message.text:
             is_triggered = True
-            
-        # 2. Если не упомянули, спрашиваем нейросеть, стоит ли вклиниваться (с шансом 40%, чтобы не спамить API)
         elif random.random() < 0.4:
-            await bot.send_chat_action(chat_id, "typing") # Показываем "печатает..."
+            await bot.send_chat_action(chat_id, "typing")
             is_triggered = await should_interrupt(context_str)
 
-        # Если триггер сработал — генерируем ответ
         if is_triggered:
-            # Формируем контекст для ответа (берем последние сообщения)
             group_histories = [{"role": "system", "content": SYSTEM_PROMPT}]
             group_histories.append({
                 "role": "user", 
@@ -192,22 +203,30 @@ async def handle_message(message: types.Message):
             
             try:
                 response = await client.chat.completions.create(
-                    model=MODEL_CHEAP, # Для групп используем быструю модель
+                    model=MODEL_CHEAP,
                     messages=group_histories,
                     temperature=0.9,
-                    max_tokens=80, # Ограничиваем, чтобы не спамил
+                    max_tokens=500, # Увеличено для групп
                     extra_body={"plugins": [{"id": "web"}]}
                 )
                 
+                # Логируем причину завершения
+                finish_reason = response.choices[0].finish_reason
+                logger.info(f"Finish reason (группа): {finish_reason}")
+
                 reply = response.choices[0].message.content
-                await message.reply(reply)
                 
-                # Добавляем свой ответ в контекст группы, чтобы бот помнил, что он сказал
+                # Защита от пустого ответа
+                if not reply or not reply.strip():
+                    reply = "Шо ви там пишете? А ну перейдіть на мову!"
+                
+                await message.reply(reply)
                 group_context[chat_id].append(f"Бот: {reply}")
                 
-                # С шансом 15% кидаем картинку
-                if random.random() < 0.15:
-                    await message.answer_photo(photo=random.choice(IMAGES))
+                if random.random() < 0.25:
+                    sticker_id = random.choice(list(STICKERS.values()))
+                    if "YOUR_STICKER" not in sticker_id:
+                        await message.answer_sticker(sticker=sticker_id)
                     
             except Exception as e:
                 logger.error(f"Ошибка API в группе: {e}", exc_info=True)
