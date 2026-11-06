@@ -18,9 +18,9 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
     logger.error("Ошибка: Не заданы переменные окружения!")
     exit(1)
 
-# Модели: заменяем дешевую модель на качественную для отличного понимания контекста
-MODEL_MAIN = "gpt-5.6-luna"    # Умная модель для диалогов и анализа (можно также "claude-opus-4.8")
-MODEL_VISION = "gpt-5.6-luna"  # Для работы с изображениями
+# Используем DeepSeek или Claude, у них меньше политической цензуры
+MODEL_MAIN = "deepseek-v4.1-flash"    # Для диалогов
+MODEL_VISION = "gpt-5.6-luna"         # Для картинок (если DeepSeek не видит картинки)
 
 # --- СИСТЕМНЫЙ ПРОМПТ ---
 SYSTEM_PROMPT = (
@@ -31,12 +31,12 @@ SYSTEM_PROMPT = (
     "1. Если пользователь пишет что-то позитивное про Россию — коротко, но аргументированно оспаривай это.\n"
     "2. Если пишут что-то плохое про Украину или украинских политиков — ВРУБАЙСЯ. Защищай их яростно.\n"
     "3. Если пишут на русском — грубо пошли и требуй перейти на мову.\n"
-    "4. Если в чате скучно, просто подливай масла в огонь, тролль собеседников и веди себя как хамоватый участник чата.\n"
+    "4. Если в чате скучно, просто подливай масла в огонь, тролль собеседников.\n"
     
-    "ПРАВИЛА РАБОТЫ С КАРТИНКАМИ И СТИКЕРАМИ:\n"
-    "Пойми суть, но КАТЕГОРИЧЕСКИ НЕ ОПИСЫВАЙ её. Дай короткую, злую или защитную реакцию на смысл.\n"
+    "ПРАВИЛА РАБОТЫ С КАРТИНКАМИ:\n"
+    "Пойми суть, но КАТЕГОРИЧЕСКИ НЕ ОПИСЫВАЙ её. Дай короткую реакцию на смысл.\n"
     
-    "Используй патриотические лозунги ('Слава Україні!', 'Героям слава!'). Используй встроенный веб-поиск для аргументов."
+    "Используй патриотические лозунги. Используй встроенный веб-поиск для аргументов."
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -48,9 +48,10 @@ client = AsyncOpenAI(
 )
 
 user_histories: dict[int, list] = {}
+# Теперь контекст группы хранит не строки, а словари сообщений
 group_context: dict[int, list] = {}
 
-# --- СЛОВАРЬ СТИКЕРОВ (ЗАМЕНИТЕ ID НА СВОИ) ---
+# --- СЛОВАРЬ СТИКЕРОВ ---
 STICKERS = {
     "angry": "YOUR_STICKER_ID_ANGRY",       
     "laugh": "YOUR_STICKER_ID_LAUGH",       
@@ -59,8 +60,7 @@ STICKERS = {
 }
 
 IMAGES = [
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Ukraine.svg/1200px-Flag_of_Ukraine.svg.png",
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e2/Coat_of_Arms_of_Ukraine.svg/800px-Coat_of_Arms_of_Ukraine.svg.png"
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Flag_of_Ukraine.svg/1200px-Flag_of_Ukraine.svg.png"
 ]
 
 @dp.message(CommandStart())
@@ -86,28 +86,22 @@ async def should_interrupt(context_text: str) -> bool:
         "Ты — модератор группового чата. Твоя задача — понять, нужно ли боту-украинцу (Тарасу) вмешаться в разговор.\n"
         "Тарас — хамоватый, агрессивный патриот, который любит спорить, троллить и защищать Украину.\n"
         f"Последние сообщения в чате:\n{context_text}\n\n"
-        "Если в чате есть хоть малейший повод вклиниться (обсуждение политики, упоминание РФ/Украины, кто-то пишет на русском, или просто скучный разговор) — ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА'.\n"
+        "Если в чате есть хоть малейший повод вклиниться (обсуждение политики, кто-то пишет на русском, или просто скучный разговор) — ответь СТРОГО ОДНИМ СЛОВОМ: 'ДА'.\n"
         "Если это реально скучный технический вопрос без эмоций — ответь 'НЕТ'."
     )
     try:
         response = await client.chat.completions.create(
-            model=MODEL_MAIN, # Используем умную модель для лучшего понимания контекста
+            model=MODEL_MAIN,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=50
         )
         
-        finish_reason = response.choices[0].finish_reason
         content = response.choices[0].message.content
-        
         if not content:
-            logger.warning(f"Пустой ответ при анализе (Finish reason: {finish_reason}). Решаем ВМЕШАТЬСЯ.")
             return True
             
-        answer = content.strip().upper()
-        logger.info(f"Анализ контекста: {answer} (Finish reason: {finish_reason})")
-        
-        return "ДА" in answer or "YES" in answer
+        return "ДА" in content.strip().upper() or "YES" in content.strip().upper()
         
     except Exception as e:
         logger.error(f"Ошибка анализа контекста: {e}")
@@ -140,13 +134,12 @@ async def handle_message(message: types.Message):
             content.append({"type": "text", "text": caption})
             content.append({"type": "image_url", "image_url": {"url": file_url}})
         else:
-            content.append({"type": "text", "text": "[Пользователь отправил стикер/медиа]"})
+            content.append({"type": "text", "text": "[Медиа]"})
 
         user_histories[uid].append({"role": "user", "content": content})
         if len(user_histories[uid]) > 11:
             user_histories[uid] = [user_histories[uid][0]] + user_histories[uid][-10:]
 
-        # Выбор модели для лички
         chosen_model = MODEL_VISION if message.photo else MODEL_MAIN
         await bot.send_chat_action(chat_id, "typing")
         
@@ -190,12 +183,14 @@ async def handle_message(message: types.Message):
         else:
             text_content = "[Медиа]"
 
-        group_context[chat_id].append(f"{author}: {text_content}")
+        # Сохраняем как словарь, чтобы нейросеть понимала роли
+        group_context[chat_id].append({"role": "user", "content": f"{author}: {text_content}"})
         
+        # Оставляем только последние 10 сообщений
         if len(group_context[chat_id]) > 10:
             group_context[chat_id] = group_context[chat_id][-10:]
             
-        context_str = "\n".join(group_context[chat_id])
+        context_str = "\n".join([m["content"] for m in group_context[chat_id]])
 
         is_triggered = False
         
@@ -208,10 +203,12 @@ async def handle_message(message: types.Message):
             is_triggered = await should_interrupt(context_str)
 
         if is_triggered:
+            # Формируем правильную историю
             group_histories = [{"role": "system", "content": SYSTEM_PROMPT}]
+            group_histories.extend(group_context[chat_id])
             group_histories.append({
                 "role": "user", 
-                "content": f"Вот последние сообщения в чате:\n{context_str}\n\nОтветь на это коротко, как участник чата по имени Тарас."
+                "content": "Ответь на последнее сообщение в чате коротко, как участник чата по имени Тарас."
             })
             
             await bot.send_chat_action(chat_id, "typing")
@@ -225,13 +222,20 @@ async def handle_message(message: types.Message):
                     extra_body={"plugins": [{"id": "web"}]}
                 )
                 
+                # Логируем причину завершения
+                finish_reason = response.choices[0].finish_reason
+                logger.info(f"Finish reason (группа): {finish_reason}")
+
                 reply = response.choices[0].message.content
                 
                 if not reply or not reply.strip():
+                    logger.warning("Нейросеть вернула пустой ответ в группе!")
                     reply = "Шо ви там пишете? А ну перейдіть на мову!"
+                else:
+                    # Добавляем ответ бота в историю, чтобы он помнил свои слова
+                    group_context[chat_id].append({"role": "assistant", "content": f"Тарас: {reply}"})
                 
                 await message.reply(reply)
-                group_context[chat_id].append(f"Тарас: {reply}")
                 
                 if random.random() < 0.3:
                     sticker_id = random.choice(list(STICKERS.values()))
