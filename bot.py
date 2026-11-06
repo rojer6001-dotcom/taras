@@ -21,7 +21,7 @@ if not BOT_TOKEN or not PLUSVIBE_KEY:
 MODEL_MAIN = "deepseek-v4.1-flash"
 MODEL_VISION = "gpt-5.6-luna"
 
-# --- СИСТЕМНЫЙ ПРОМПТ (ДОБАВЛЕНЫ ПРАВИЛА HTML) ---
+# --- СИСТЕМНЫЙ ПРОМПТ (ДОБАВЛЕН ЗАПРЕТ НА ИМЯ) ---
 SYSTEM_PROMPT = (
     "Ты — «Профессиональный украинец» по имени Тарас. Ты агрессивный, злой, нетерпимый и очень общительный персонаж, общаешься ИСКЛЮЧИТЕЛЬНО на мове. "
     "Твой стиль: как реальный человек в чате — рублеными фразами, используй сленг, капс и эмодзи. Никаких длинных лекций! "
@@ -35,9 +35,12 @@ SYSTEM_PROMPT = (
     "ПРАВИЛА РАБОТЫ С КАРТИНКАМИ:\n"
     "Пойми суть, но КАТЕГОРИЧЕСКИ НЕ ОПИСЫВАЙ её. Дай короткую реакцию на смысл.\n"
     
-    "ФОРМАТИРОВАНИЕ ТЕКСТА (ВАЖНО!):\n"
-    "Если хочешь выделить слово или фразу, используй ТОЛЬКО HTML-теги: <b>жирный</b>, <i>курсив</i>, <code>код</code>.\n"
-    "КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ Markdown (никаких звездочек **, решеток # или подчеркиваний _).\n"
+    "ФОРМАТИРОВАНИЕ ТЕКСТА:\n"
+    "Если хочешь выделить слово, используй ТОЛЬКО HTML-теги: <b>жирный</b>, <i>курсив</i>. Никаких звездочек **.\n"
+    
+    "ВАЖНОЕ ПРАВИЛО:\n"
+    "НИКОГДА не пиши свое имя ('Тарас:' или 'Тарасе:') в начале своего сообщения! В Telegram и так видно, кто пишет. "
+    "Просто пиши сам текст ответа.\n"
     
     "Используй патриотические лозунги. Используй встроенный веб-поиск для аргументов."
 )
@@ -69,7 +72,6 @@ IMAGES = [
 async def cmd_start(message: types.Message):
     if message.chat.type == "private":
         user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        # Используем HTML для форматирования
         await message.answer("Слава Україні! 🇺🇦 Шо треба, <b>москалю</b>?", parse_mode="HTML")
     else:
         await message.reply("Слава Україні! Я тут. Якщо треба щось сказати — кличте або пишіть російською, я втручусь.", parse_mode="HTML")
@@ -159,12 +161,11 @@ async def handle_message(message: types.Message):
                 
             user_histories[uid].append({"role": "assistant", "content": reply})
             
-            # Отправляем с HTML-разметкой
             try:
                 await message.answer(reply, parse_mode="HTML")
             except Exception as html_error:
-                logger.warning(f"Ошибка HTML в личке, отправляем текст: {html_error}")
-                await message.answer(reply, parse_mode=None) # Фоллбэк без разметки
+                logger.warning(f"Ошибка HTML в личке: {html_error}")
+                await message.answer(reply, parse_mode=None)
             
             if random.random() < 0.2:
                 sticker_id = random.choice(list(STICKERS.values()))
@@ -190,6 +191,7 @@ async def handle_message(message: types.Message):
         else:
             text_content = "[Медиа]"
 
+        # Пользователя сохраняем с именем, чтобы модель понимала контекст
         group_context[chat_id].append({"role": "user", "content": f"{author}: {text_content}"})
         
         if len(group_context[chat_id]) > 10:
@@ -212,7 +214,7 @@ async def handle_message(message: types.Message):
             group_histories.extend(group_context[chat_id])
             group_histories.append({
                 "role": "user", 
-                "content": "Ответь на последнее сообщение в чате коротко, как участник чата по имени Тарас."
+                "content": "Відповідай на останнє повідомлення коротко. Не пиши своє ім'я на початку!"
             })
             
             await bot.send_chat_action(chat_id, "typing")
@@ -235,14 +237,14 @@ async def handle_message(message: types.Message):
                     logger.warning("Нейросеть вернула пустой ответ в группе!")
                     reply = "Шо ви там пишете? А ну перейдіть на мову!"
                 else:
-                    group_context[chat_id].append({"role": "assistant", "content": f"Тарас: {reply}"})
+                    # Сохраняем ответ бота БЕЗ приставки "Тарас:", чтобы не было эха
+                    group_context[chat_id].append({"role": "assistant", "content": reply})
                 
-                # Отправляем с HTML-разметкой
                 try:
                     await message.reply(reply, parse_mode="HTML")
                 except Exception as html_error:
-                    logger.warning(f"Ошибка HTML в группе, отправляем текст: {html_error}")
-                    await message.reply(reply, parse_mode=None) # Фоллбэк без разметки
+                    logger.warning(f"Ошибка HTML в группе: {html_error}")
+                    await message.reply(reply, parse_mode=None)
                 
                 if random.random() < 0.3:
                     sticker_id = random.choice(list(STICKERS.values()))
